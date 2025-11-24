@@ -2,136 +2,336 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Racao Viewer</title>
+  <title>Visor Multi-CSV con Exportación CSV y Paginación</title>
+
   <style>
     body {
       font-family: sans-serif;
       padding: 20px;
-      max-width: 900px;
     }
+
     table {
       border-collapse: collapse;
       width: 100%;
       margin-top: 20px;
     }
+
     th, td {
       border: 1px solid #ccc;
       padding: 6px;
+      text-align: right;
     }
-    #results {
+
+    th:first-child, td:first-child {
+      text-align: left;
+    }
+
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-width: 600px;
       margin-top: 20px;
-      font-size: 18px;
+    }
+
+    .checkbox-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-height: 200px;
+      overflow-y: auto;
+      border: 1px solid #ccc;
+      padding: 8px;
+    }
+
+    #exportExcel {
+      display: none;
+      margin-top: 8px;
+    }
+
+    .paging-controls {
+      margin-top: 10px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .paging-controls button:disabled {
+      opacity: 0.5;
     }
   </style>
 </head>
 <body>
 
-<h2>Racao De Carregada Viewer</h2>
+<h2>Visor Multi-CSV</h2>
 
-<input type="file" id="csvFiles" accept=".csv" multiple>
+<input type="file" id="csvFile" accept=".csv" multiple>
 
-<br><br>
+<div class="controls">
 
-<label>Start date:</label>
-<input type="date" id="startDate">
+  <div>
+    <label>Fecha inicio:</label>
+    <input type="date" id="startDate">
+  </div>
 
-<label>End date:</label>
-<input type="date" id="endDate">
+  <div>
+    <label>Fecha fin:</label>
+    <input type="date" id="endDate">
+  </div>
 
-<button id="applyFilter">Apply Filter</button>
+  <div>
+    <label>Pileta:</label>
+    <input type="number" id="piletaSelector" min="1" step="1" placeholder="Dejar vacío para todas">
+  </div>
 
-<div id="results"></div>
+  <div>
+    <label>Columnas a mostrar:</label>
+    <div id="columnSelector" class="checkbox-list"></div>
+  </div>
+
+  <div>
+    <label>
+      <input type="checkbox" id="sumMode">
+      Sumar todas las piletas (Peso esperado y Peso descargado)
+    </label>
+  </div>
+
+  <div>
+    <label>Líneas por página:</label>
+    <input type="number" id="rowsPerPage" min="1" value="20">
+  </div>
+
+  <button id="applyFilter">Aplicar filtro</button>
+  <button id="exportExcel">Exportar tabla a CSV</button>
+
+  <div class="paging-controls">
+    <button id="prevPage" disabled>Anterior</button>
+    <span id="pageInfo"></span>
+    <button id="nextPage" disabled>Siguiente</button>
+  </div>
+
+</div>
+
+<table id="output"></table>
 
 <script>
-  let allRows = [];
+let originalRows = [];
+let headers = [];
+let currentPage = 1;
+let totalPages = 1;
+let pagedRows = [];
+const BLOCKED_COLUMNS = ["%SR036", "%SR035"];
 
-  document.getElementById("csvFiles").addEventListener("change", function (e) {
-    const files = Array.from(e.target.files);
-    if (files.length === 0) return;
+document.getElementById("csvFile").addEventListener("change", function (e) {
+  const files = [...e.target.files];
+  if (!files.length) return;
 
-    allRows = [];
-    let pending = files.length;
+  originalRows = [];
+  headers = [];
+  let filesRead = 0;
+  const allData = [];
 
-    files.forEach(file => {
-      const reader = new FileReader();
-      reader.onload = function (event) {
-        const text = event.target.result.trim();
-        const lines = text.split("\n");
+  files.forEach(file => {
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const text = ev.target.result;
+      const lines = text.split(/\r?\n/).filter(l => l.trim() !== "");
+      const rows = lines.map(l => l.split(",").map(v => v.trim()));
+      allData.push(rows);
+      filesRead++;
+      if (filesRead === files.length) mergeAllData(allData);
+    };
+    reader.readAsText(file);
+  });
+});
 
-        // Always skip header row
-        lines.slice(1).forEach(line => {
-          const parts = line.split(",");
-          if (parts.length < 9) return;
+function mergeAllData(datasetList) {
+  const allHeaders = new Set();
+  datasetList.forEach(rows => {
+    rows[0].forEach(h => { if (!BLOCKED_COLUMNS.includes(h)) allHeaders.add(h); });
+  });
+  headers = [...allHeaders];
 
-          const date = parts[0].trim(); // 02-10-25
-          const time = parts[1].trim(); // 09:50:39
-          const acude = parts[4].trim();
-          const racao = parseFloat(parts[8]);
-
-          allRows.push({ date, time, acude, racao });
-        });
-
-        if (--pending === 0) {
-          alert("Files loaded. Select dates and press Apply Filter.");
-        }
-      };
-
-      reader.readAsText(file);
-    });
+  const mergedRows = [];
+  datasetList.forEach(rows => {
+    const fileHeaders = rows[0];
+    const idxMap = fileHeaders.map(h => headers.indexOf(h));
+    for (let i = 1; i < rows.length; i++) {
+      const row = new Array(headers.length).fill("");
+      rows[i].forEach((cell, oldIndex) => {
+        const newIndex = idxMap[oldIndex];
+        if (newIndex >= 0) row[newIndex] = cell;
+      });
+      mergedRows.push(row);
+    }
   });
 
-  document.getElementById("applyFilter").addEventListener("click", function () {
-    const start = document.getElementById("startDate").value;
-    const end = document.getElementById("endDate").value;
+  originalRows = [headers, ...mergedRows];
+  createColumnSelector(headers);
+  renderTable(originalRows);
+}
 
-    if (!start || !end) {
-      alert("Please choose a start and end date.");
+function createColumnSelector(headerList) {
+  const box = document.getElementById("columnSelector");
+  box.innerHTML = "";
+  headerList.forEach((h, i) => {
+    const label = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = i;
+    cb.checked = true;
+    label.appendChild(cb);
+    label.append(" " + translateColumn(h));
+    box.appendChild(label);
+  });
+}
+
+function translateColumn(col) {
+  switch (col.toLowerCase()) {
+    case "acude": return "Pileta";
+    case "peso": return "Peso esperado";
+    case "numero_racao": return "Numero de ración";
+    case "peso_esp_racao": return "Densidad (g/Lts)";
+    case "racao_decarregad": return "Peso descargado";
+    default: return col;
+  }
+}
+
+document.getElementById("applyFilter").addEventListener("click", () => { currentPage = 1; applyFilters(); });
+
+function applyFilters() {
+  if (originalRows.length === 0) return;
+
+  const start = document.getElementById("startDate").value;
+  const end = document.getElementById("endDate").value;
+  const sumMode = document.getElementById("sumMode").checked;
+  const selectedPileta = document.getElementById("piletaSelector").value.trim();
+  const rowsPerPageInput = document.getElementById("rowsPerPage");
+
+  const selectedCols = [...document.querySelectorAll("#columnSelector input:checked")]
+    .map(cb => parseInt(cb.value));
+
+  const headerIndexDate = headers.findIndex(h => h.toLowerCase().includes("date"));
+  const idxPileta = headers.findIndex(h => h.toLowerCase() === "acude");
+
+  let filtered = originalRows.slice(1).filter(r => {
+    if (headerIndexDate >= 0) {
+      const rowDate = r[headerIndexDate];
+      if (!rowDate) return false;
+      const d = new Date(rowDate);
+      if (start && d < new Date(start)) return false;
+      if (end && d > new Date(end)) return false;
+    }
+    if (selectedPileta && r[idxPileta] != selectedPileta) return false;
+    return true;
+  });
+
+  // Export button appears only after filtering
+  const exportBtn = document.getElementById("exportExcel");
+  exportBtn.style.display = filtered.length ? "block" : "none";
+
+  if (sumMode) {
+    const idxPeso = headers.findIndex(h => h.toLowerCase() === "peso");
+    const idxRacao = headers.findIndex(h => h.toLowerCase() === "racao_decarregad");
+    if (idxPileta < 0 || idxPeso < 0 || idxRacao < 0) {
+      alert("Columnas necesarias (Pileta, Peso esperado, Peso descargado) no encontradas.");
       return;
     }
 
-    const startTime = new Date(start).getTime();
-    const endTime = new Date(end).getTime();
-
-    const filtered = allRows.filter(r => {
-      const t = csvDateToTime(r.date, r.time);
-      return t >= startTime && t <= endTime;
-    });
-
-    const totals = {};
-
+    const sums = {};
     filtered.forEach(r => {
-      if (!totals[r.acude]) totals[r.acude] = 0;
-      if (!isNaN(r.racao)) totals[r.acude] += r.racao;
+      const pileta = r[idxPileta];
+      if (!sums[pileta]) sums[pileta] = { peso: 0, racao: 0 };
+      sums[pileta].peso += parseFloat(r[idxPeso] || 0);
+      sums[pileta].racao += parseFloat(r[idxRacao] || 0);
     });
 
-    showTotals(totals);
+    const output = [["Pileta", "Peso esperado total", "Peso descargado total"]];
+    Object.keys(sums).sort().forEach(pileta => {
+      output.push([
+        pileta,
+        sums[pileta].peso.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+        sums[pileta].racao.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      ]);
+    });
+
+    pagedRows = output;
+    rowsPerPageInput.disabled = true;
+    currentPage = 1;
+    totalPages = 1;
+    updatePage();
+    return;
+  }
+
+  // Normal mode with paging
+  const output = [
+    selectedCols.map(i => translateColumn(headers[i])),
+    ...filtered.map(r => selectedCols.map(i => r[i]))
+  ];
+
+  pagedRows = output;
+  totalPages = Math.ceil((pagedRows.length - 1) / parseInt(rowsPerPageInput.value));
+  rowsPerPageInput.disabled = false;
+  updatePage();
+}
+
+function updatePage() {
+  const table = document.getElementById("output");
+  table.innerHTML = "";
+
+  const rowsPerPage = parseInt(document.getElementById("rowsPerPage").value);
+  const startIdx = 1 + (currentPage - 1) * rowsPerPage;
+  const endIdx = Math.min(startIdx + rowsPerPage - 1, pagedRows.length - 1);
+
+  // Always render header
+  const headerRow = document.createElement("tr");
+  pagedRows[0].forEach(cell => {
+    const th = document.createElement("th");
+    th.textContent = cell;
+    headerRow.appendChild(th);
+  });
+  table.appendChild(headerRow);
+
+  for (let i = startIdx; i <= endIdx; i++) {
+    const row = document.createElement("tr");
+    pagedRows[i].forEach(cell => {
+      const td = document.createElement("td");
+      td.textContent = cell;
+      row.appendChild(td);
+    });
+    table.appendChild(row);
+  }
+
+  // Update paging buttons and info
+  const pageInfo = document.getElementById("pageInfo");
+  pageInfo.textContent = totalPages > 1 ? `Página ${currentPage} de ${totalPages}` : "";
+  document.getElementById("prevPage").disabled = currentPage <= 1;
+  document.getElementById("nextPage").disabled = currentPage >= totalPages;
+}
+
+// Paging buttons
+document.getElementById("prevPage").addEventListener("click", () => { if(currentPage>1){currentPage--; updatePage();} });
+document.getElementById("nextPage").addEventListener("click", () => { if(currentPage<totalPages){currentPage++; updatePage();} });
+
+// Export CSV
+document.getElementById("exportExcel").addEventListener("click", function () {
+  if (!pagedRows || !pagedRows.length) return;
+
+  let csvContent = "";
+  pagedRows.forEach(row => {
+    const rowData = row.map(c => `"${c.replace(/"/g,'""')}"`);
+    csvContent += rowData.join(",") + "\n";
   });
 
-  function csvDateToTime(date, time) {
-    // CSV date format is DD-MM-YY (example: 02-10-25)
-    const [d, m, y] = date.split("-").map(Number);
-    const [hh, mm, ss] = time.split(":").map(Number);
-    return new Date(2000 + y, m - 1, d, hh, mm, ss).getTime();
-  }
-
-  function showTotals(totals) {
-    const div = document.getElementById("results");
-    div.innerHTML = "<h3>Total Racao_decarregada per Acude</h3>";
-
-    const table = document.createElement("table");
-
-    const header = document.createElement("tr");
-    header.innerHTML = "<th>Acude</th><th>Total Racao_decarregada</th>";
-    table.appendChild(header);
-
-    Object.keys(totals).forEach(acude => {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${acude}</td><td>${totals[acude].toFixed(2)}</td>`;
-      table.appendChild(tr);
-    });
-
-    div.appendChild(table);
-  }
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "tabla_exportada.csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+});
 </script>
 
 </body>
